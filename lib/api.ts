@@ -17,6 +17,7 @@ type ApiMessage = {
 async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     ...options,
+    cache: options.cache ?? "no-store",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
@@ -86,6 +87,18 @@ export async function getMe(): Promise<User | null> {
   }
 
   return (data as { user: User }).user;
+}
+
+export async function getServerTime(): Promise<string> {
+  const result = await apiFetch<{
+    success: boolean;
+    database: Array<{ server_time: string }>;
+  }>("/api/health", { method: "GET" });
+  const serverTime = result.database?.[0]?.server_time;
+  if (!serverTime || Number.isNaN(Date.parse(serverTime))) {
+    throw new Error("Waktu dari database tidak valid.");
+  }
+  return serverTime;
 }
 
 export async function getUsers(): Promise<User[]> {

@@ -51,10 +51,18 @@ export async function GET(request: NextRequest) {
 
     // Validasi ID user tujuan.
     const receiverId = Number(searchParams.get("with"));
+    const afterId = Number(searchParams.get("afterId") || 0);
 
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
       return NextResponse.json(
         { success: false, message: "Parameter with tidak valid" },
+        { status: 400 }
+      );
+    }
+
+    if (!Number.isSafeInteger(afterId) || afterId < 0) {
+      return NextResponse.json(
+        { success: false, message: "Parameter afterId tidak valid" },
         { status: 400 }
       );
     }
@@ -93,39 +101,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    let messages: MessageRow[] = [];
-
-    if (afterId === 0) {
-      // Ambil 100 pesan terbaru saat pertama membuka percakapan.
-      const [rows] = await db.execute(
-        `SELECT id, sender_id, receiver_id, body, created_at
-         FROM messages
-         WHERE (sender_id = ? AND receiver_id = ?)
-            OR (sender_id = ? AND receiver_id = ?)
-         ORDER BY id DESC
-         LIMIT 100`,
-        [currentUserId, receiverId, receiverId, currentUserId]
-      );
-
-      // Urutkan kembali dari pesan terlama ke terbaru.
-      messages = (rows as MessageRow[]).reverse();
-    } else {
-      // Ambil hanya pesan yang lebih baru dari afterId.
-      const [rows] = await db.execute(
-        `SELECT id, sender_id, receiver_id, body, created_at
-         FROM messages
-         WHERE (
-           (sender_id = ? AND receiver_id = ?)
-           OR (sender_id = ? AND receiver_id = ?)
-         )
-           AND id > ?
-         ORDER BY id ASC
-         LIMIT 100`,
-        [currentUserId, receiverId, receiverId, currentUserId, afterId]
-      );
-
-      messages = rows as MessageRow[];
-    }
+    // Ambil pesan dua arah antara kedua user
+    const [messages] = await db.execute(
+      `SELECT id, sender_id, receiver_id, body, created_at
+       FROM messages
+       WHERE ((sender_id = ? AND receiver_id = ?)
+          OR (sender_id = ? AND receiver_id = ?))
+         AND id > ?
+       ORDER BY id ASC
+       LIMIT 100`,
+      [currentUserId, receiverId, receiverId, currentUserId, afterId]
+    );
 
     return NextResponse.json({
       success: true,

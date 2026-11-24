@@ -12,4 +12,9 @@ const pool = mysql.createPool({
   timezone: "Z",
 });
 
+// Keep TIMESTAMP values and JavaScript Date parsing on the same UTC basis.
+pool.on("connection", (connection) => {
+  connection.query("SET time_zone = '+00:00'");
+});
+
 export default pool;

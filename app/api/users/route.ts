@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
 
     // Ambil semua user selain user yang sedang login
     const [userRows] = await db.execute(
-      `SELECT id, username, email, created_at
+      `SELECT id, username
        FROM users
        WHERE id != ?
        ORDER BY username ASC`,
