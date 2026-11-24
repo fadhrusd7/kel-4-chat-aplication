@@ -40,10 +40,18 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const receiverId = Number(searchParams.get("with"));
+    const afterId = Number(searchParams.get("afterId") || 0);
 
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
       return NextResponse.json(
         { success: false, message: "Parameter with tidak valid" },
+        { status: 400 }
+      );
+    }
+
+    if (!Number.isSafeInteger(afterId) || afterId < 0) {
+      return NextResponse.json(
+        { success: false, message: "Parameter afterId tidak valid" },
         { status: 400 }
       );
     }
@@ -72,11 +80,12 @@ export async function GET(request: NextRequest) {
     const [messages] = await db.execute(
       `SELECT id, sender_id, receiver_id, body, created_at
        FROM messages
-       WHERE (sender_id = ? AND receiver_id = ?)
-          OR (sender_id = ? AND receiver_id = ?)
+       WHERE ((sender_id = ? AND receiver_id = ?)
+          OR (sender_id = ? AND receiver_id = ?))
+         AND id > ?
        ORDER BY id ASC
        LIMIT 100`,
-      [currentUserId, receiverId, receiverId, currentUserId]
+      [currentUserId, receiverId, receiverId, currentUserId, afterId]
     );
 
     return NextResponse.json({

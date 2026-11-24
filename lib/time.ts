@@ -1,7 +1,15 @@
 const WIB_ZONE = "Asia/Jakarta";
+let serverTimeOffsetMs = 0;
+
+export function setSyncedServerTime(serverTime: string, measuredAt = Date.now()) {
+  const serverTimeMs = Date.parse(serverTime);
+  if (Number.isFinite(serverTimeMs)) {
+    serverTimeOffsetMs = serverTimeMs - measuredAt;
+  }
+}
 
 export function getSyncedNow(): Date {
-  return new Date();
+  return new Date(Date.now() + serverTimeOffsetMs);
 }
 
 export function formatTime(iso: string | Date): string {

@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { getMessages, getUsers, requestBackup, sendMessage } from "@/lib/api";
-import { formatBackupTime, formatDateLabel, formatTime, getSyncedNow } from "@/lib/time";
+import { getMessages, getServerTime, getUsers, requestBackup, sendMessage } from "@/lib/api";
+import { formatBackupTime, formatDateLabel, formatTime, getSyncedNow, setSyncedServerTime } from "@/lib/time";
 import type { Message, User } from "@/lib/types";
 
 type BackupState = { kind: "idle" | "working" | "ok" | "error"; finishedAt?: string };
@@ -58,10 +58,22 @@ export default function ChatApp() {
   }, [ready, user]);
 
   useEffect(() => {
-    const initialUpdate = window.setTimeout(() => setNow(getSyncedNow()), 0);
-    const timer = window.setInterval(() => setNow(getSyncedNow()), 30_000);
+    let active = true;
+    const synchronize = async () => {
+      const requestStartedAt = Date.now();
+      try {
+        const serverTime = await getServerTime();
+        const responseReceivedAt = Date.now();
+        setSyncedServerTime(serverTime, (requestStartedAt + responseReceivedAt) / 2);
+      } catch {
+        // Keep the last known server offset; use the device clock before the first sync.
+      }
+      if (active) setNow(getSyncedNow());
+    };
+    void synchronize();
+    const timer = window.setInterval(() => void synchronize(), 30_000);
     return () => {
-      window.clearTimeout(initialUpdate);
+      active = false;
       window.clearInterval(timer);
     };
   }, []);
