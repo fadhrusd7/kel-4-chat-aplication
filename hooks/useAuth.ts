@@ -1,7 +1,12 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
-import { getMe, login as apiLogin, logout as apiLogout } from "@/lib/api";
+import {
+  getMe,
+  login as apiLogin,
+  logout as apiLogout,
+} from "@/lib/api";
 import type { LoginData, User } from "@/lib/types";
 
 export function useAuth() {
@@ -10,13 +15,22 @@ export function useAuth() {
 
   useEffect(() => {
     let active = true;
-    getMe().then((current) => {
-      if (active) {
-        setUser(current);
-        setReady(true);
-      }
-    });
-    return () => { active = false; };
+
+    getMe()
+      .then((current) => {
+        if (active) setUser(current);
+      })
+      .catch((error) => {
+        console.error("Gagal memeriksa sesi:", error);
+        if (active) setUser(null);
+      })
+      .finally(() => {
+        if (active) setReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function signIn(data: LoginData) {

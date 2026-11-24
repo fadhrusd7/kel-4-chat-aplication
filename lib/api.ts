@@ -1,122 +1,130 @@
+
 import type { LoginData, Message, RegisterData, User } from "@/lib/types";
 
-const SESSION_KEY = "obrolan.mock-user";
-const wait = () => new Promise<void>((resolve) => setTimeout(resolve, 300 + Math.random() * 300));
+type ApiError = {
+  success?: boolean;
+  message?: string;
+};
 
-const users: User[] = [
-  { id: 1, username: "andi", email: "andi@example.test" },
-  { id: 2, username: "budi", email: "budi@example.test" },
-  { id: 3, username: "citra", email: "citra@example.test" },
-];
+type ApiMessage = {
+  id: number;
+  sender_id: number;
+  receiver_id: number;
+  body: string;
+  created_at: string;
+};
 
-const initialMessages: Message[] = [
-  { id: 1, senderId: 2, receiverId: 1, body: "Hai, sudah sempat lihat catatan kuliah kemarin?", createdAt: "2026-11-22T13:14:00+07:00" },
-  { id: 2, senderId: 1, receiverId: 2, body: "Sudah. Bagian konsistensi data menarik juga.", createdAt: "2026-11-22T13:19:00+07:00", status: "sent" },
-  { id: 3, senderId: 2, receiverId: 1, body: "Betul, nanti kita bahas setelah kelas ya.", createdAt: "2026-11-23T09:05:00+07:00" },
-  { id: 4, senderId: 3, receiverId: 1, body: "Halo Andi! Ada waktu buat diskusi tugas?", createdAt: "2026-11-23T10:42:00+07:00" },
-  { id: 5, senderId: 1, receiverId: 3, body: "Bisa, sore ini aku sudah selesai kelas.", createdAt: "2026-11-23T10:48:00+07:00", status: "sent" },
-  { id: 6, senderId: 2, receiverId: 1, body: "Pagi! Aku kirim rangkuman yang kemarin.", createdAt: "2026-11-24T08:12:00+07:00" },
-];
+async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
 
-let messages = initialMessages;
-let nextUserId = 4;
-let nextMessageId = 7;
-const failedOnceBodies = new Set<string>();
+  const data = await response.json().catch(() => ({}));
 
-function currentUser(): User | null {
-  if (typeof window === "undefined") return null;
-  const id = Number(window.localStorage.getItem(SESSION_KEY));
-  return users.find((user) => user.id === id) ?? null;
+  if (!response.ok) {
+    const error = data as ApiError;
+    throw new Error(error.message || `Request gagal (${response.status})`);
+  }
+
+  return data as T;
+}
+
+function mapMessage(message: ApiMessage): Message {
+  return {
+    id: message.id,
+    senderId: message.sender_id,
+    receiverId: message.receiver_id,
+    body: message.body,
+    createdAt: message.created_at,
+    status: "sent",
+  };
 }
 
 export async function register(data: RegisterData): Promise<void> {
-  await wait();
-  if (users.some((user) => user.username.toLowerCase() === data.username.toLowerCase())) {
-    throw new Error("Username sudah dipakai.");
-  }
-  if (users.some((user) => user.email?.toLowerCase() === data.email.toLowerCase())) {
-    throw new Error("Email sudah terdaftar.");
-  }
-  users.push({ id: nextUserId++, username: data.username, email: data.email });
+  await apiFetch("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 export async function login(data: LoginData): Promise<User> {
-  await wait();
-  const user = users.find((candidate) =>
-    candidate.username.toLowerCase() === data.identifier.toLowerCase() ||
-    candidate.email?.toLowerCase() === data.identifier.toLowerCase(),
-  );
-  if (!user || data.password.toLowerCase() === "salah") {
-    throw new Error("Username atau password salah.");
-  }
-  window.localStorage.setItem(SESSION_KEY, String(user.id));
-  return user;
+  const result = await apiFetch<{ user: User }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+  return result.user;
 }
 
 export async function logout(): Promise<void> {
-  await wait();
-  window.localStorage.removeItem(SESSION_KEY);
+  await apiFetch("/api/auth/logout", {
+    method: "POST",
+  });
 }
 
 export async function getMe(): Promise<User | null> {
-  await wait();
-  return currentUser();
+  const response = await fetch("/api/me", {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (response.status === 401) {
+    return null;
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = data as ApiError;
+    throw new Error(error.message || "Gagal memeriksa sesi login.");
+  }
+
+  return (data as { user: User }).user;
 }
 
 export async function getUsers(): Promise<User[]> {
-  await wait();
-  const me = currentUser();
-  return users.filter((user) => user.id !== me?.id);
+  const result = await apiFetch<{ users: User[] }>("/api/users");
+  return result.users;
 }
 
-export async function getMessages(withUserId: number, afterId = 0): Promise<Message[]> {
-  await wait();
-  const me = currentUser();
-  if (!me) return [];
-  return messages.filter((message) =>
-    message.id > afterId &&
-    ((message.senderId === me.id && message.receiverId === withUserId) ||
-      (message.senderId === withUserId && message.receiverId === me.id)),
+export async function getMessages(
+  withUserId: number,
+  afterId = 0
+): Promise<Message[]> {
+  const params = new URLSearchParams({
+    with: String(withUserId),
+    afterId: String(afterId),
+  });
+
+  const result = await apiFetch<{ messages: ApiMessage[] }>(
+    `/api/messages?${params.toString()}`
   );
+
+  return result.messages.map(mapMessage);
 }
 
-export async function sendMessage(receiverId: number, body: string): Promise<Message> {
-  await wait();
-  const me = currentUser();
-  if (!me) throw new Error("Sesi berakhir. Silakan masuk kembali.");
-  if (body.trim().toLowerCase().startsWith("/gagal ") && !failedOnceBodies.has(body)) {
-    failedOnceBodies.add(body);
-    throw new Error("Pesan tidak terkirim.");
-  }
+export async function sendMessage(
+  receiverId: number,
+  body: string
+): Promise<Message> {
+  const result = await apiFetch<{ data: ApiMessage }>("/api/messages", {
+    method: "POST",
+    body: JSON.stringify({ receiverId, body }),
+  });
 
-  const message: Message = {
-    id: nextMessageId++,
-    senderId: me.id,
-    receiverId,
-    body,
-    createdAt: new Date().toISOString(),
-    status: "sent",
-  };
-  messages = [...messages, message];
-
-  if (Math.random() < 0.4) {
-    const replyId = nextMessageId++;
-    window.setTimeout(() => {
-      messages = [...messages, {
-        id: replyId,
-        senderId: receiverId,
-        receiverId: me.id,
-        body: ["Siap, aku cek dulu ya.", "Oke, terima kasih!", "Menarik, boleh ceritakan lebih lanjut?"][Math.floor(Math.random() * 3)],
-        createdAt: new Date().toISOString(),
-      }];
-    }, 3500);
-  }
-
-  return message;
+  return mapMessage(result.data);
 }
 
-export async function requestBackup(): Promise<{ status: "ok" | "error"; finishedAt?: string }> {
-  await wait();
-  if (Math.random() < 0.08) return { status: "error" };
-  return { status: "ok", finishedAt: new Date().toISOString() };
+// Endpoint backup belum tersedia. Jangan menampilkan backup palsu.
+export async function requestBackup(): Promise<{
+  status: "ok" | "error";
+  finishedAt?: string;
+}> {
+  throw new Error("Fitur backup belum tersedia di backend.");
 }

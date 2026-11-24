@@ -164,11 +164,21 @@ export default function ChatApp() {
     }
   }
 
-  async function handleBackup() {
+    async function handleBackup() {
     setBackup({ kind: "working" });
-    const result = await requestBackup();
-    setBackup(result.status === "ok" && result.finishedAt ? { kind: "ok", finishedAt: result.finishedAt } : { kind: "error" });
-  }
+
+    try {
+        const result = await requestBackup();
+        setBackup(
+        result.status === "ok" && result.finishedAt
+            ? { kind: "ok", finishedAt: result.finishedAt }
+            : { kind: "error" }
+        );
+    } catch (error) {
+        console.error("Backup error:", error);
+        setBackup({ kind: "error" });
+    }
+    }
 
   async function handleLogout() {
     await signOut();
