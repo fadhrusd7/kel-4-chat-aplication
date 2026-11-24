@@ -51,7 +51,8 @@ export async function GET(request: NextRequest) {
 
     // Validasi ID user tujuan.
     const receiverId = Number(searchParams.get("with"));
-    const afterId = Number(searchParams.get("afterId") || 0);
+    const afterIdParam = searchParams.get("afterId");
+    const afterId = afterIdParam === null ? 0 : Number(afterIdParam);
 
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
       return NextResponse.json(
@@ -73,17 +74,6 @@ export async function GET(request: NextRequest) {
           success: false,
           message: "Tidak dapat membuka chat dengan diri sendiri",
         },
-        { status: 400 }
-      );
-    }
-
-    // Validasi ID pesan terakhir untuk polling.
-    const afterIdParam = searchParams.get("afterId");
-    const afterId = afterIdParam === null ? 0 : Number(afterIdParam);
-
-    if (!Number.isSafeInteger(afterId) || afterId < 0) {
-      return NextResponse.json(
-        { success: false, message: "Parameter afterId tidak valid" },
         { status: 400 }
       );
     }
