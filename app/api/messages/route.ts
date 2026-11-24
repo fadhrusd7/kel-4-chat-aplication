@@ -3,6 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import db from "@/lib/db";
 
+type MessageRow = {
+  id: number;
+  sender_id: number;
+  receiver_id: number;
+  body: string;
+  created_at: Date | string;
+};
+
+// Memeriksa session dan mengambil ID user yang sedang login.
 async function getAuthenticatedUserId(request: NextRequest) {
   const token = request.cookies.get("session_token")?.value;
 
@@ -26,7 +35,7 @@ async function getAuthenticatedUserId(request: NextRequest) {
   return sessions.length > 0 ? sessions[0].user_id : null;
 }
 
-// GET: mengambil percakapan dengan user tertentu
+// GET: mengambil percakapan dengan user tertentu.
 export async function GET(request: NextRequest) {
   try {
     const currentUserId = await getAuthenticatedUserId(request);
@@ -39,6 +48,8 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
+
+    // Validasi ID user tujuan.
     const receiverId = Number(searchParams.get("with"));
 
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
@@ -50,12 +61,26 @@ export async function GET(request: NextRequest) {
 
     if (receiverId === currentUserId) {
       return NextResponse.json(
-        { success: false, message: "Tidak dapat membuka chat dengan diri sendiri" },
+        {
+          success: false,
+          message: "Tidak dapat membuka chat dengan diri sendiri",
+        },
         { status: 400 }
       );
     }
 
-    // Pastikan user tujuan memang ada
+    // Validasi ID pesan terakhir untuk polling.
+    const afterIdParam = searchParams.get("afterId");
+    const afterId = afterIdParam === null ? 0 : Number(afterIdParam);
+
+    if (!Number.isSafeInteger(afterId) || afterId < 0) {
+      return NextResponse.json(
+        { success: false, message: "Parameter afterId tidak valid" },
+        { status: 400 }
+      );
+    }
+
+    // Pastikan user tujuan memang ada.
     const [userRows] = await db.execute(
       "SELECT id FROM users WHERE id = ? LIMIT 1",
       [receiverId]
@@ -68,16 +93,39 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Ambil pesan dua arah antara kedua user
-    const [messages] = await db.execute(
-      `SELECT id, sender_id, receiver_id, body, created_at
-       FROM messages
-       WHERE (sender_id = ? AND receiver_id = ?)
-          OR (sender_id = ? AND receiver_id = ?)
-       ORDER BY id ASC
-       LIMIT 100`,
-      [currentUserId, receiverId, receiverId, currentUserId]
-    );
+    let messages: MessageRow[] = [];
+
+    if (afterId === 0) {
+      // Ambil 100 pesan terbaru saat pertama membuka percakapan.
+      const [rows] = await db.execute(
+        `SELECT id, sender_id, receiver_id, body, created_at
+         FROM messages
+         WHERE (sender_id = ? AND receiver_id = ?)
+            OR (sender_id = ? AND receiver_id = ?)
+         ORDER BY id DESC
+         LIMIT 100`,
+        [currentUserId, receiverId, receiverId, currentUserId]
+      );
+
+      // Urutkan kembali dari pesan terlama ke terbaru.
+      messages = (rows as MessageRow[]).reverse();
+    } else {
+      // Ambil hanya pesan yang lebih baru dari afterId.
+      const [rows] = await db.execute(
+        `SELECT id, sender_id, receiver_id, body, created_at
+         FROM messages
+         WHERE (
+           (sender_id = ? AND receiver_id = ?)
+           OR (sender_id = ? AND receiver_id = ?)
+         )
+           AND id > ?
+         ORDER BY id ASC
+         LIMIT 100`,
+        [currentUserId, receiverId, receiverId, currentUserId, afterId]
+      );
+
+      messages = rows as MessageRow[];
+    }
 
     return NextResponse.json({
       success: true,
@@ -93,7 +141,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST: mengirim pesan
+// POST: mengirim pesan.
 export async function POST(request: NextRequest) {
   try {
     const currentUserId = await getAuthenticatedUserId(request);
@@ -110,6 +158,7 @@ export async function POST(request: NextRequest) {
     const receiverId = Number(body.receiverId);
     const messageBody = String(body.body || "").trim();
 
+    // Validasi penerima.
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
       return NextResponse.json(
         { success: false, message: "receiverId tidak valid" },
@@ -119,11 +168,15 @@ export async function POST(request: NextRequest) {
 
     if (receiverId === currentUserId) {
       return NextResponse.json(
-        { success: false, message: "Tidak dapat mengirim pesan ke diri sendiri" },
+        {
+          success: false,
+          message: "Tidak dapat mengirim pesan ke diri sendiri",
+        },
         { status: 400 }
       );
     }
 
+    // Validasi isi pesan.
     if (!messageBody) {
       return NextResponse.json(
         { success: false, message: "Pesan tidak boleh kosong" },
@@ -138,7 +191,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Pastikan penerima tersedia
+    // Pastikan penerima tersedia.
     const [userRows] = await db.execute(
       "SELECT id FROM users WHERE id = ? LIMIT 1",
       [receiverId]
@@ -160,6 +213,7 @@ export async function POST(request: NextRequest) {
 
     const insertResult = result as { insertId: number | bigint };
 
+    // Ambil kembali pesan yang berhasil disimpan.
     const [messageRows] = await db.execute(
       `SELECT id, sender_id, receiver_id, body, created_at
        FROM messages
@@ -172,8 +226,15 @@ export async function POST(request: NextRequest) {
       sender_id: number;
       receiver_id: number;
       body: string;
-      created_at: Date;
+      created_at: Date | string;
     }>;
+
+    if (savedMessages.length === 0) {
+      return NextResponse.json(
+        { success: false, message: "Pesan gagal diambil setelah disimpan" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
       {
