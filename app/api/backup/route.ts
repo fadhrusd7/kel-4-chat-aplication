@@ -6,8 +6,8 @@ import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import db from "@/lib/db";
 
-// Memakai Node.js (bukan edge) karena route ini menjalankan mysqldump.
-export const runtime = "nodejs";
+// Route Handler memakai Node.js secara default; runtime segment config
+// tidak kompatibel dengan cacheComponents pada konfigurasi proyek ini.
 
 function fail(status: number, message: string) {
   return NextResponse.json({ status: "error", message }, { status });
@@ -66,11 +66,14 @@ export async function POST(request: NextRequest) {
   const dumpFilePath = path.join(tmpDir, dumpFileName);
 
   let exitCode: number;
+  let dumpStderr = "";
   try {
     const dumpProcess = spawn(
       "mysqldump",
       [
         `--defaults-extra-file=${optionFilePath}`,
+        // Hindari query COLUMN_STATISTICS yang tidak tersedia pada MySQL lama/MariaDB.
+        "--column-statistics=0",
         "--single-transaction",
         "--quick",
         "--skip-lock-tables",
@@ -78,6 +81,12 @@ export async function POST(request: NextRequest) {
       ],
       { windowsHide: true }
     );
+
+    // Ambil stderr agar penyebab exit code gagal terlihat di log server.
+    dumpProcess.stderr?.setEncoding("utf8");
+    dumpProcess.stderr?.on("data", (chunk: string) => {
+      if (dumpStderr.length < 8_000) dumpStderr += chunk;
+    });
 
     const fileStream = fs.createWriteStream(dumpFilePath);
 
@@ -111,7 +120,9 @@ export async function POST(request: NextRequest) {
 
   if (exitCode !== 0) {
     await fsp.unlink(dumpFilePath).catch(() => {});
-    return fail(500, "mysqldump gagal");
+    const detail = dumpStderr.trim();
+    console.error("mysqldump exited with code", exitCode, detail);
+    return fail(500, detail ? `mysqldump gagal: ${detail}` : "mysqldump gagal tanpa detail dari stderr");
   }
 
   try {

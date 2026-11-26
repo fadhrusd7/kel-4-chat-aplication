@@ -41,9 +41,11 @@ CREATE TABLE IF NOT EXISTS `messages` (
   `receiver_id` int unsigned NOT NULL,
   `body` text NOT NULL,
   `created_at` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `deleted_at` timestamp(3) NULL DEFAULT NULL,
   PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */,
   KEY `idx_messages_sender_receiver_id` (`sender_id`, `receiver_id`, `id`),
   KEY `idx_messages_receiver_sender_id` (`receiver_id`, `sender_id`, `id`),
+  KEY `idx_messages_deleted_at` (`deleted_at`),
   CONSTRAINT `fk_messages_sender` FOREIGN KEY (`sender_id`) REFERENCES `users` (`id`),
   CONSTRAINT `fk_messages_receiver` FOREIGN KEY (`receiver_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

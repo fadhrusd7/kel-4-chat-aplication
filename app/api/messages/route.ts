@@ -9,6 +9,7 @@ type MessageRow = {
   receiver_id: number;
   body: string;
   created_at: Date | string;
+  deleted_at: Date | string | null;
 };
 
 // Memeriksa session dan mengambil ID user yang sedang login.
@@ -144,20 +145,20 @@ export async function GET(request: NextRequest) {
         .replace("Z", "");
 
       const [rows] = await db.execute(
-        `SELECT id, sender_id, receiver_id, body, created_at
+        `SELECT id, sender_id, receiver_id, body, created_at, deleted_at
          FROM messages
          WHERE ((sender_id = ? AND receiver_id = ?)
             OR (sender_id = ? AND receiver_id = ?))
-           AND created_at >= ?
+           AND (created_at >= ? OR deleted_at >= ?)
          ORDER BY created_at ASC, id ASC
          LIMIT 100`,
-        [currentUserId, receiverId, receiverId, currentUserId, overlapStartSql]
+        [currentUserId, receiverId, receiverId, currentUserId, overlapStartSql, overlapStartSql]
       );
       messages = rows as unknown[];
     } else {
       // ── Mode legacy: id > afterId (dipakai saat pemuatan awal) ──
       const [rows] = await db.execute(
-        `SELECT id, sender_id, receiver_id, body, created_at
+        `SELECT id, sender_id, receiver_id, body, created_at, deleted_at
          FROM messages
          WHERE ((sender_id = ? AND receiver_id = ?)
             OR (sender_id = ? AND receiver_id = ?))
@@ -257,7 +258,7 @@ export async function POST(request: NextRequest) {
 
     // Ambil kembali pesan yang berhasil disimpan.
     const [messageRows] = await db.execute(
-      `SELECT id, sender_id, receiver_id, body, created_at
+      `SELECT id, sender_id, receiver_id, body, created_at, deleted_at
        FROM messages
        WHERE id = ?`,
       [insertResult.insertId]
@@ -269,6 +270,7 @@ export async function POST(request: NextRequest) {
       receiver_id: number;
       body: string;
       created_at: Date | string;
+      deleted_at: Date | string | null;
     }>;
 
     if (savedMessages.length === 0) {
@@ -289,6 +291,70 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Send message error:", error);
 
+    return NextResponse.json(
+      { success: false, message: "Terjadi kesalahan pada server" },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE: tandai pesan milik user sebagai terhapus.
+// Soft delete mempertahankan snapshot sebelum penghapusan agar dapat diuji lewat backup.
+export async function DELETE(request: NextRequest) {
+  try {
+    const currentUserId = await getAuthenticatedUserId(request);
+
+    if (!currentUserId) {
+      return NextResponse.json(
+        { success: false, message: "Belum login" },
+        { status: 401 }
+      );
+    }
+
+    const body = await request.json();
+    const messageId = Number(body.messageId);
+
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+      return NextResponse.json(
+        { success: false, message: "messageId tidak valid" },
+        { status: 400 }
+      );
+    }
+
+    const [result] = await db.execute(
+      `UPDATE messages
+       SET deleted_at = UTC_TIMESTAMP(3)
+       WHERE id = ?
+         AND sender_id = ?
+         AND deleted_at IS NULL`,
+      [messageId, currentUserId]
+    );
+
+    if ((result as { affectedRows: number }).affectedRows === 0) {
+      return NextResponse.json(
+        { success: false, message: "Pesan tidak ditemukan atau bukan pesanmu" },
+        { status: 404 }
+      );
+    }
+
+    const [rows] = await db.execute(
+      `SELECT id, sender_id, receiver_id, body, created_at, deleted_at
+       FROM messages
+       WHERE id = ?`,
+      [messageId]
+    );
+
+    const deletedMessages = rows as MessageRow[];
+    if (deletedMessages.length === 0) {
+      return NextResponse.json(
+        { success: false, message: "Pesan terhapus, tetapi gagal dimuat ulang" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, data: deletedMessages[0] });
+  } catch (error) {
+    console.error("Delete message error:", error);
     return NextResponse.json(
       { success: false, message: "Terjadi kesalahan pada server" },
       { status: 500 }

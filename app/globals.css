@@ -545,6 +545,14 @@ button {
   color: var(--paper);
 }
 
+.message-bubble-deleted,
+.message-row-own .message-bubble-deleted {
+  border-style: dashed;
+  background: var(--wash);
+  color: var(--mute);
+  font-style: italic;
+}
+
 .message-row-sending .message-bubble {
   border-color: var(--sending);
   background: var(--sending);
@@ -582,6 +590,31 @@ button {
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.delete-message-button {
+  min-height: 44px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.delete-message-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.message-action-error {
+  display: block;
+  margin-top: 6px;
+  color: #b00020;
+  font-size: 12px;
 }
 
 .new-messages-button {

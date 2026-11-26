@@ -10,6 +10,7 @@ export type Message = {
   receiverId: number;
   body: string;
   createdAt: string;
+  deletedAt?: string | null;
   status?: "sending" | "sent" | "failed";
 };
 

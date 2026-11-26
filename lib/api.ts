@@ -12,6 +12,7 @@ type ApiMessage = {
   receiver_id: number;
   body: string;
   created_at: string;
+  deleted_at: string | null;
 };
 
 /** Respons lengkap dari /api/health, termasuk metrik RTT Node.js↔TiDB. */
@@ -51,6 +52,7 @@ function mapMessage(message: ApiMessage): Message {
     receiverId: message.receiver_id,
     body: message.body,
     createdAt: message.created_at,
+    deletedAt: message.deleted_at,
     status: "sent",
   };
 }
@@ -161,6 +163,15 @@ export async function sendMessage(
   const result = await apiFetch<{ data: ApiMessage }>("/api/messages", {
     method: "POST",
     body: JSON.stringify({ receiverId, body }),
+  });
+
+  return mapMessage(result.data);
+}
+
+export async function deleteMessage(messageId: number): Promise<Message> {
+  const result = await apiFetch<{ data: ApiMessage }>("/api/messages", {
+    method: "DELETE",
+    body: JSON.stringify({ messageId }),
   });
 
   return mapMessage(result.data);

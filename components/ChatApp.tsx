@@ -3,11 +3,24 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { getMessages, getServerHealth, getUsers, requestBackup, sendMessage } from "@/lib/api";
+import { deleteMessage as apiDeleteMessage, getMessages, getServerHealth, getUsers, requestBackup, sendMessage } from "@/lib/api";
 import { formatBackupTime, formatDateLabel, formatTime, getSyncedNow, setSyncedServerTime } from "@/lib/time";
 import type { Message, User } from "@/lib/types";
 
 type BackupState = { kind: "idle" | "working" | "ok" | "error"; finishedAt?: string };
+
+function messageActivityTime(message: Message) {
+  return message.deletedAt ?? message.createdAt;
+}
+
+function latestActivity(messages: Message[]) {
+  return messages.reduce<Message | undefined>((latest, message) => {
+    if (!latest || Date.parse(messageActivityTime(message)) > Date.parse(messageActivityTime(latest))) {
+      return message;
+    }
+    return latest;
+  }, undefined);
+}
 
 function mergeMessages(current: Message[], incoming: Message[]) {
   const byId = new Map(current.map((message) => [message.id, message]));
@@ -22,8 +35,17 @@ function mergeMessages(current: Message[], incoming: Message[]) {
   });
 }
 
+function changedMessages(current: Message[], incoming: Message[]) {
+  const previousById = new Map(current.map((message) => [message.id, message]));
+  return incoming.filter((message) => {
+    const previous = previousById.get(message.id);
+    return !previous || previous.deletedAt !== message.deletedAt || previous.body !== message.body;
+  });
+}
+
 function messagePreview(message?: Message) {
   if (!message) return "Belum ada pesan";
+  if (message.deletedAt) return "Pesan ini telah dihapus";
   return message.body.replace(/\s+/g, " ");
 }
 
@@ -42,10 +64,17 @@ export default function ChatApp() {
   const [now, setNow] = useState(() => new Date(0));
   const [showNewMessages, setShowNewMessages] = useState(false);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [deletingMessageId, setDeletingMessageId] = useState<number | null>(null);
+  const [messageActionError, setMessageActionError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const messageCountRef = useRef(0);
   const localMessageIdRef = useRef(0);
+  const conversationsRef = useRef(conversations);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   useEffect(() => {
     if (ready && !user) router.replace("/login");
@@ -90,7 +119,7 @@ export default function ChatApp() {
       if (active) setNow(getSyncedNow());
     };
     void synchronize();
-    const timer = window.setInterval(() => void synchronize(), 1_000);
+    const timer = window.setInterval(() => void synchronize(), 30_000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -126,18 +155,17 @@ export default function ChatApp() {
       const lastId = confirmedMessages.length > 0
         ? Math.max(...confirmedMessages.map((m) => m.id))
         : 0;
-      const lastConfirmedTime = confirmedMessages.length > 0
-        ? confirmedMessages.reduce((latest, m) =>
-            Date.parse(m.createdAt) > Date.parse(latest.createdAt) ? m : latest
-          ).createdAt
-        : undefined;
+      const latestConfirmed = latestActivity(confirmedMessages);
+      const lastConfirmedTime = latestConfirmed ? messageActivityTime(latestConfirmed) : undefined;
       try {
         const fresh = await getMessages(selected.id, lastId, lastConfirmedTime);
         if (!active || fresh.length === 0) return;
-        setMessages((current) => mergeMessages(current, fresh));
+        const changed = changedMessages(messages, fresh);
+        if (changed.length === 0) return;
+        setMessages((current) => mergeMessages(current, changed));
         setConversations((current) => ({
           ...current,
-          [selected.id]: mergeMessages(current[selected.id] ?? [], fresh),
+          [selected.id]: mergeMessages(current[selected.id] ?? [], changed),
         }));
         if (atBottomRef.current) {
           requestAnimationFrame(() =>
@@ -156,6 +184,58 @@ export default function ChatApp() {
       window.clearInterval(timer);
     };
   }, [messages, selected]);
+
+  // Refresh sidebar previews for conversations that are not currently open.
+  useEffect(() => {
+    if (!ready || !user || users.length === 0) return;
+
+    let active = true;
+    let polling = false;
+
+    const pollSidebar = async () => {
+      if (polling || document.visibilityState !== "visible") return;
+
+      polling = true;
+      try {
+        const otherUsers = users.filter((other) => other.id !== selected?.id);
+        const updates = await Promise.all(otherUsers.map(async (other) => {
+          const knownMessages = conversationsRef.current[other.id] ?? [];
+          const confirmed = knownMessages.filter((message) => message.id > 0);
+          const lastId = confirmed.length > 0
+            ? Math.max(...confirmed.map((message) => message.id))
+            : 0;
+          const latest = latestActivity(confirmed);
+          const lastTime = latest ? messageActivityTime(latest) : undefined;
+
+          const fresh = await getMessages(other.id, lastId, lastTime);
+          return { userId: other.id, fresh };
+        }));
+
+        if (!active) return;
+        setConversations((current) => {
+          let changed = false;
+          const next = { ...current };
+          for (const { userId, fresh } of updates) {
+            const changedMessagesForThread = changedMessages(next[userId] ?? [], fresh);
+            if (changedMessagesForThread.length === 0) continue;
+            next[userId] = mergeMessages(next[userId] ?? [], changedMessagesForThread);
+            changed = true;
+          }
+          return changed ? next : current;
+        });
+      } catch {
+        // Retry on the next interval; keep the current previews visible.
+      } finally {
+        polling = false;
+      }
+    };
+
+    const timer = window.setInterval(() => void pollSidebar(), 2500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [ready, user, users, selected?.id]);
 
   useEffect(() => {
     if (messages.length > messageCountRef.current && atBottomRef.current) {
@@ -206,6 +286,20 @@ export default function ChatApp() {
     }
   }
 
+  async function removeMessage(message: Message) {
+    if (!user || message.senderId !== user.id || message.id <= 0 || message.deletedAt) return;
+    setDeletingMessageId(message.id);
+    setMessageActionError("");
+    try {
+      const deleted = await apiDeleteMessage(message.id);
+      updateMessages((current) => mergeMessages(current, [deleted]));
+    } catch {
+      setMessageActionError("Pesan gagal dihapus. Coba lagi.");
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -242,7 +336,17 @@ export default function ChatApp() {
     setMobileChatOpen(true);
   }
 
-  const filteredUsers = users.filter((other) => other.username.toLowerCase().includes(search.trim().toLowerCase()));
+  const filteredUsers = users
+    .filter((other) => other.username.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((first, second) => {
+      const firstLatest = latestActivity(conversations[first.id] ?? []);
+      const secondLatest = latestActivity(conversations[second.id] ?? []);
+      if (!firstLatest && !secondLatest) return first.username.localeCompare(second.username);
+      if (!firstLatest) return 1;
+      if (!secondLatest) return -1;
+      const byTime = Date.parse(messageActivityTime(secondLatest)) - Date.parse(messageActivityTime(firstLatest));
+      return byTime || first.username.localeCompare(second.username);
+    });
   const backupLabel = backup.kind === "working"
     ? "Memproses…"
     : backup.kind === "ok" && backup.finishedAt
@@ -281,14 +385,14 @@ export default function ChatApp() {
         <div className="user-list" aria-live="polite">
           {loadingUsers ? <p className="loading-label" style={{ padding: "16px 20px" }}>Memuat daftar…</p> : filteredUsers.length ? filteredUsers.map((other) => {
             const thread = conversations[other.id] ?? [];
-            const latest = thread.at(-1);
+            const latest = latestActivity(thread);
             return (
               <button className={`user-row${selected?.id === other.id ? " user-row-active" : ""}`} key={other.id} type="button" onClick={() => selectUser(other)} aria-current={selected?.id === other.id ? "true" : undefined}>
                 <span className="avatar" aria-hidden="true">{other.username.slice(0, 1)}</span>
                 <span className="user-copy">
                   <span className="user-name-line">
                     <span className="user-name">{other.username}</span>
-                    {latest && <time className="user-time">{formatTime(latest.createdAt)}</time>}
+                    {latest && <time className="user-time">{formatTime(messageActivityTime(latest))}</time>}
                   </span>
                   <span className="user-preview">{messagePreview(latest)}</span>
                 </span>
@@ -336,11 +440,14 @@ export default function ChatApp() {
                   <div key={message.id}>
                     {newDay && <div className="date-divider"><span>{formatDateLabel(message.createdAt, now)}</span></div>}
                     <div className={`message-row${own ? " message-row-own" : ""}${state === "sending" ? " message-row-sending" : ""}${state === "failed" ? " message-row-failed" : ""}`}>
-                      <div className="message-bubble">{message.body}</div>
+                      <div className={`message-bubble${message.deletedAt ? " message-bubble-deleted" : ""}`}>
+                        {message.deletedAt ? "Pesan ini telah dihapus." : message.body}
+                      </div>
                       <div className="message-meta">
                         <time>{formatTime(message.createdAt)}</time>
                         {own && <span>· {state === "sending" ? "Mengirim…" : state === "failed" ? "Gagal terkirim" : "Terkirim"}</span>}
                         {own && state === "failed" && <button className="retry-button" type="button" onClick={() => void submitMessage(undefined, message)}>Kirim ulang</button>}
+                        {own && state === "sent" && !message.deletedAt && message.id > 0 && <button className="delete-message-button" type="button" disabled={deletingMessageId === message.id} onClick={() => void removeMessage(message)}>{deletingMessageId === message.id ? "Menghapus…" : "Hapus"}</button>}
                       </div>
                     </div>
                   </div>
@@ -362,6 +469,7 @@ export default function ChatApp() {
             <button className="button button-primary" type="submit" disabled={!selected || !draft.trim()}>Kirim</button>
           </div>
           <span className="composer-hint">Enter kirim · Shift+Enter baris baru</span>
+          {messageActionError && <span className="message-action-error" role="alert">{messageActionError}</span>}
         </form>
       </section>
     </main>
