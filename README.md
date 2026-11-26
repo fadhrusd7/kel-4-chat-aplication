@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Obrolan: Aplikasi Chat Terdistribusi (Kelompok 4)
 
-## Getting Started
+Tugas Sistem Terdistribusi. Aplikasi chat web: tiap user menjalankan application server (Next.js) sendiri di laptopnya, semuanya memakai satu cloud database bersama, dan ada backup ke PC terpisah. Waktu pesan mengikuti jam server database, bukan jam laptop.
 
-First, run the development server:
+## Arsitektur
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Browser  ->  Next.js di laptop (app/api/*)  ->  Cloud database (TiDB)
+                      |
+                      +-- Minta backup --> mysqldump --> backup-receiver di PC backup
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+| Bagian | Peran | Lokasi |
+|---|---|---|
+| Client dan application server | Web chat, route `/api/*`, sinkronisasi waktu | Laptop tiap user |
+| Cloud database | Menyimpan `users`, `sessions`, `messages`; acuan waktu | TiDB Cloud |
+| Backup storage | Menerima file hasil dump | PC backup (`backup-receiver/`) |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Menjalankan aplikasi
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Butuh Node.js (LTS).
 
-## Learn More
+```bash
+npm install
+cp .env.example .env.local   # lalu isi nilainya
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Buka http://localhost:3000. Cek koneksi database di http://localhost:3000/api/health (harus `"success": true`).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Setiap kali `.env.local` diubah, jalankan ulang `npm run dev`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Database
 
-## Deploy on Vercel
+- **Cloud (dipakai kelompok):** minta `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` ke pengelola database dan isi di `.env.local`.
+- **Lokal (untuk mencoba):** buat database `chat` dan user `chat` di MySQL atau MariaDB, lalu jalankan skema:
+  ```bash
+  mariadb -u chat -p < database/schema.sql
+  ```
+  Isi `.env.local` dengan `DB_HOST=localhost`, `DB_PORT=3306`, dan user serta password yang dibuat.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Backup
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Di PC backup: `cd backup-receiver`, siapkan `.env` berisi `BACKUP_TOKEN`, `BACKUP_RECEIVER_PORT`, dan `BACKUP_STORAGE_PATH`, lalu `node server.js` (butuh `npm install` di root agar `dotenv` terpasang).
+2. Di laptop user: isi `BACKUP_RECEIVER_URL` (misalnya `http://IP-PC:4000/upload`) dan `BACKUP_TOKEN` yang sama di `.env.local`.
+3. Perintah `mysqldump` harus tersedia di laptop (cek dengan `which mysqldump`).
+4. Tekan "Minta backup" di aplikasi. Status berhasil atau gagal tampil di sidebar.
+
+Pemulihan (restore) dilakukan manual dari file backup: `mysql -h HOST -u USER -p chat < backup_xxx.sql`.
+
+## Sinkronisasi waktu (algoritma Cristian)
+
+- Waktu pesan dibuat oleh database saat pesan disimpan (`created_at`), jadi urutan chat sama untuk semua user walau jam laptop berbeda.
+- Jam "Jam server" di header memakai `getSyncedNow()` di `lib/time.ts`. Aplikasi memanggil `/api/health` tiap 30 detik, mencatat waktu database dan lama pulang-pergi, lalu menghitung offset: `waktu server ≈ Ts + RTT/2`.
+- Penyimpanan dalam UTC, tampilan dalam WIB.
+
+Demo: matikan sinkronisasi otomatis jam laptop, majukan jam beberapa menit, muat ulang halaman. Jam server di header tetap benar, dan jam pesan sama di semua laptop.
+
+## Struktur
+
+```
+app/            halaman (login, register, chat) dan route API
+components/     AuthForm, ChatApp
+hooks/          useAuth
+lib/            api.ts (fetch ke /api/*), db.ts, time.ts (waktu dan Cristian)
+database/       schema.sql
+backup-receiver/ penerima file backup untuk PC backup
+```
+
+Panduan tampilan ada di `DESIGN.md`, kebutuhan produk di `PRD.md`.

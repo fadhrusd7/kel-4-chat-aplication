@@ -90,7 +90,7 @@ export default function ChatApp() {
       if (active) setNow(getSyncedNow());
     };
     void synchronize();
-    const timer = window.setInterval(() => void synchronize(), 30_000);
+    const timer = window.setInterval(() => void synchronize(), 1_000);
     return () => {
       active = false;
       window.clearInterval(timer);
