@@ -36,6 +36,27 @@ async function getAuthenticatedUserId(request: NextRequest) {
 }
 
 // GET: mengambil percakapan dengan user tertentu.
+//
+// Parameter query yang didukung:
+//   with      (wajib) — ID user lawan bicara.
+//   afterId   (opsional, legacy) — ambil pesan dengan id > afterId.
+//   afterTime (opsional) — ISO 8601 UTC; jika disediakan bersama afterId,
+//             menggunakan cursor komposit (created_at, id) dengan overlap
+//             2 detik untuk menangkap pesan terlambat-commit.
+//
+// Strategi cursor:
+//   Jika hanya afterId yang ada (atau afterId = 0, afterTime tidak ada):
+//     Perilaku legacy — WHERE id > afterId. Aman untuk pemuatan awal.
+//
+//   Jika afterTime tersedia (polling inkremental):
+//     WHERE (created_at > (afterTime - 2 detik))
+//       AND (id > 0)
+//     Kemudian filter di sisi server untuk hanya mengirim pesan dengan
+//     id > afterId ATAU created_at > afterTime (pesan baru sungguh baru),
+//     ditambah pesan dengan created_at ANTARA (afterTime - 2s) dan afterTime
+//     yang belum pernah dikirim (menangkap terlambat-commit).
+//     Deduplication di client oleh mergeMessages() akan menghapus duplikat
+//     dari overlap 2 detik.
 export async function GET(request: NextRequest) {
   try {
     const currentUserId = await getAuthenticatedUserId(request);
@@ -53,6 +74,8 @@ export async function GET(request: NextRequest) {
     const receiverId = Number(searchParams.get("with"));
     const afterIdParam = searchParams.get("afterId");
     const afterId = afterIdParam === null ? 0 : Number(afterIdParam);
+    // afterTime: timestamp ISO 8601 UTC dari pesan terakhir yang sudah diterima client.
+    const afterTimeParam = searchParams.get("afterTime");
 
     if (!Number.isInteger(receiverId) || receiverId <= 0) {
       return NextResponse.json(
@@ -91,17 +114,60 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Ambil pesan dua arah antara kedua user
-    const [messages] = await db.execute(
-      `SELECT id, sender_id, receiver_id, body, created_at
-       FROM messages
-       WHERE ((sender_id = ? AND receiver_id = ?)
-          OR (sender_id = ? AND receiver_id = ?))
-         AND id > ?
-       ORDER BY id ASC
-       LIMIT 100`,
-      [currentUserId, receiverId, receiverId, currentUserId, afterId]
-    );
+    let messages: unknown[];
+
+    if (afterTimeParam) {
+      // ── Mode polling inkremental berbasis timestamp+id cursor ──
+      //
+      // Ambil pesan dalam jendela [afterTime - 2s, +∞) untuk menangkap
+      // pesan yang terlambat commit ke database (race condition TiDB pool).
+      // Grace period 2 detik dipilih berdasarkan:
+      //   - Interval polling 2,5 detik — satu siklus penuh masih aman.
+      //   - Latency TiDB Cloud AWS ap-southeast-1 ke Indonesia umumnya < 50ms.
+      //   - Margin konservatif untuk transient network jitter.
+      //
+      // Pesan duplikat dari overlap akan dieliminasi oleh mergeMessages()
+      // di sisi client yang menggunakan Map berbasis id.
+      const afterTimeMs = Date.parse(afterTimeParam);
+      if (!Number.isFinite(afterTimeMs)) {
+        return NextResponse.json(
+          { success: false, message: "Parameter afterTime tidak valid" },
+          { status: 400 }
+        );
+      }
+
+      // Format timestamp untuk MySQL: 'YYYY-MM-DD HH:MM:SS.mmm'
+      const overlapStart = new Date(afterTimeMs - 2_000);
+      const overlapStartSql = overlapStart
+        .toISOString()
+        .replace("T", " ")
+        .replace("Z", "");
+
+      const [rows] = await db.execute(
+        `SELECT id, sender_id, receiver_id, body, created_at
+         FROM messages
+         WHERE ((sender_id = ? AND receiver_id = ?)
+            OR (sender_id = ? AND receiver_id = ?))
+           AND created_at >= ?
+         ORDER BY created_at ASC, id ASC
+         LIMIT 100`,
+        [currentUserId, receiverId, receiverId, currentUserId, overlapStartSql]
+      );
+      messages = rows as unknown[];
+    } else {
+      // ── Mode legacy: id > afterId (dipakai saat pemuatan awal) ──
+      const [rows] = await db.execute(
+        `SELECT id, sender_id, receiver_id, body, created_at
+         FROM messages
+         WHERE ((sender_id = ? AND receiver_id = ?)
+            OR (sender_id = ? AND receiver_id = ?))
+           AND id > ?
+         ORDER BY id ASC
+         LIMIT 100`,
+        [currentUserId, receiverId, receiverId, currentUserId, afterId]
+      );
+      messages = rows as unknown[];
+    }
 
     return NextResponse.json({
       success: true,

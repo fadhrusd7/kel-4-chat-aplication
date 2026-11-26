@@ -14,6 +14,15 @@ type ApiMessage = {
   created_at: string;
 };
 
+/** Respons lengkap dari /api/health, termasuk metrik RTT Node.js↔TiDB. */
+export type HealthResponse = {
+  success: boolean;
+  message: string;
+  database: Array<{ server_time: string }>;
+  node_before_ms?: number;
+  node_after_ms?: number;
+};
+
 async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     ...options,
@@ -89,16 +98,24 @@ export async function getMe(): Promise<User | null> {
   return (data as { user: User }).user;
 }
 
-export async function getServerTime(): Promise<string> {
-  const result = await apiFetch<{
-    success: boolean;
-    database: Array<{ server_time: string }>;
-  }>("/api/health", { method: "GET" });
+/**
+ * Mengambil waktu server TiDB beserta metrik RTT Node.js↔TiDB.
+ * Mengembalikan HealthResponse agar caller dapat menerapkan
+ * Cristian's Algorithm yang lebih akurat di setSyncedServerTime().
+ */
+export async function getServerHealth(): Promise<HealthResponse> {
+  const result = await apiFetch<HealthResponse>("/api/health", { method: "GET" });
   const serverTime = result.database?.[0]?.server_time;
   if (!serverTime || Number.isNaN(Date.parse(serverTime))) {
     throw new Error("Waktu dari database tidak valid.");
   }
-  return serverTime;
+  return result;
+}
+
+/** @deprecated Gunakan getServerHealth() untuk mendapatkan metrik RTT. */
+export async function getServerTime(): Promise<string> {
+  const health = await getServerHealth();
+  return health.database[0].server_time;
 }
 
 export async function getUsers(): Promise<User[]> {
@@ -106,14 +123,29 @@ export async function getUsers(): Promise<User[]> {
   return result.users;
 }
 
+/**
+ * Mengambil pesan dalam percakapan dengan pengguna tertentu.
+ *
+ * @param withUserId  ID user lawan bicara.
+ * @param afterId     (legacy) Hanya ambil pesan dengan id > afterId.
+ * @param afterTime   ISO 8601 UTC dari timestamp pesan terakhir yang sudah
+ *                    diterima client. Jika diisi, API menggunakan cursor
+ *                    berbasis (created_at, id) dengan overlap 2 detik untuk
+ *                    menangkap pesan yang terlambat commit.
+ */
 export async function getMessages(
   withUserId: number,
-  afterId = 0
+  afterId = 0,
+  afterTime?: string
 ): Promise<Message[]> {
   const params = new URLSearchParams({
     with: String(withUserId),
     afterId: String(afterId),
   });
+
+  if (afterTime) {
+    params.set("afterTime", afterTime);
+  }
 
   const result = await apiFetch<{ messages: ApiMessage[] }>(
     `/api/messages?${params.toString()}`
