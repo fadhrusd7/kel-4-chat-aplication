@@ -4,8 +4,9 @@ const dbHost = process.env.DB_HOST || "localhost";
 
 // TiDB Cloud Public Endpoint requires TLS.
 // Local MySQL can continue using a non-TLS connection.
-const useTls =
-  dbHost !== "localhost" && dbHost !== "127.0.0.1";
+const useTls = process.env.DB_SSL
+  ? process.env.DB_SSL === "true"
+  : dbHost !== "localhost" && dbHost !== "127.0.0.1";
 
 const pool = mysql.createPool({
   host: dbHost,
