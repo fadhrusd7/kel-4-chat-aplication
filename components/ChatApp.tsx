@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useAuth } from "@/hooks/useAuth";
-import { getMessages, getServerTime, getUsers, requestBackup, sendMessage } from "@/lib/api";
+import { getMessages, getServerHealth, getUsers, requestBackup, sendMessage } from "@/lib/api";
 import { formatBackupTime, formatDateLabel, formatTime, getSyncedNow, setSyncedServerTime } from "@/lib/time";
 import type { Message, User } from "@/lib/types";
 
@@ -12,7 +12,14 @@ type BackupState = { kind: "idle" | "working" | "ok" | "error"; finishedAt?: str
 function mergeMessages(current: Message[], incoming: Message[]) {
   const byId = new Map(current.map((message) => [message.id, message]));
   incoming.forEach((message) => byId.set(message.id, message));
-  return [...byId.values()].sort((first, second) => first.id - second.id);
+  // Urutan primer: created_at (jam server TiDB). Urutan sekunder: id.
+  // Ini memastikan pesan yang terlambat commit tetap tampil di posisi yang benar.
+  return [...byId.values()].sort((a, b) => {
+    const tA = Date.parse(a.createdAt);
+    const tB = Date.parse(b.createdAt);
+    if (tA !== tB) return tA - tB;
+    return a.id - b.id;
+  });
 }
 
 function messagePreview(message?: Message) {
@@ -60,11 +67,23 @@ export default function ChatApp() {
   useEffect(() => {
     let active = true;
     const synchronize = async () => {
-      const requestStartedAt = Date.now();
+      const sentAt = Date.now();
       try {
-        const serverTime = await getServerTime();
-        const responseReceivedAt = Date.now();
-        setSyncedServerTime(serverTime, (requestStartedAt + responseReceivedAt) / 2);
+        const health = await getServerHealth();
+        const receivedAt = Date.now();
+        const serverTime = health.database?.[0]?.server_time;
+        if (serverTime) {
+          // Terapkan Cristian's Algorithm yang ditingkatkan:
+          // jika node_before_ms dan node_after_ms tersedia, offset lebih akurat
+          // karena memisahkan latency HTTP dari latency Node.js↔TiDB.
+          setSyncedServerTime(
+            serverTime,
+            sentAt,
+            receivedAt,
+            health.node_before_ms,
+            health.node_after_ms
+          );
+        }
       } catch {
         // Keep the last known server offset; use the device clock before the first sync.
       }
@@ -98,14 +117,32 @@ export default function ChatApp() {
     let active = true;
     const poll = async () => {
       if (document.visibilityState !== "visible") return;
-      const lastId = Math.max(0, ...messages.filter((message) => message.id > 0).map((message) => message.id));
+      // Ambil semua pesan yang sudah masuk (tidak termasuk optimistic/local).
+      const confirmedMessages = messages.filter((m) => m.id > 0);
+      // Cursor untuk polling:
+      //   afterId   — ID pesan terakhir yang sudah dikonfirmasi server.
+      //   afterTime — timestamp ISO 8601 UTC pesan terakhir yang dikonfirmasi.
+      //               Dikirim ke API sebagai anchor untuk overlap 2 detik.
+      const lastId = confirmedMessages.length > 0
+        ? Math.max(...confirmedMessages.map((m) => m.id))
+        : 0;
+      const lastConfirmedTime = confirmedMessages.length > 0
+        ? confirmedMessages.reduce((latest, m) =>
+            Date.parse(m.createdAt) > Date.parse(latest.createdAt) ? m : latest
+          ).createdAt
+        : undefined;
       try {
-        const fresh = await getMessages(selected.id, lastId);
+        const fresh = await getMessages(selected.id, lastId, lastConfirmedTime);
         if (!active || fresh.length === 0) return;
         setMessages((current) => mergeMessages(current, fresh));
-        setConversations((current) => ({ ...current, [selected.id]: mergeMessages(current[selected.id] ?? [], fresh) }));
+        setConversations((current) => ({
+          ...current,
+          [selected.id]: mergeMessages(current[selected.id] ?? [], fresh),
+        }));
         if (atBottomRef.current) {
-          requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }));
+          requestAnimationFrame(() =>
+            scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+          );
         } else {
           setShowNewMessages(true);
         }
