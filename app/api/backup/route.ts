@@ -64,16 +64,19 @@ export async function POST(request: NextRequest) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const dumpFileName = `backup_${timestamp}.sql`;
   const dumpFilePath = path.join(tmpDir, dumpFileName);
+  const dumpCommand = process.env.MYSQLDUMP_BIN?.trim()
+    || (process.platform === "win32" ? "mysqldump" : "mariadb-dump");
+  const isMariaDbDump = /mariadb-dump(?:\.exe)?$/i.test(dumpCommand);
 
   let exitCode: number;
   let dumpStderr = "";
   try {
     const dumpProcess = spawn(
-      "mysqldump",
+      dumpCommand,
       [
         `--defaults-extra-file=${optionFilePath}`,
-        // Hindari query COLUMN_STATISTICS yang tidak tersedia pada MySQL lama/MariaDB.
-        "--column-statistics=0",
+        // Opsi ini hanya dikenal oleh klien mysqldump MySQL, bukan mariadb-dump.
+        ...(!isMariaDbDump ? ["--column-statistics=0"] : []),
         "--single-transaction",
         "--quick",
         "--skip-lock-tables",
@@ -110,7 +113,7 @@ export async function POST(request: NextRequest) {
     return fail(
       500,
       code === "ENOENT"
-        ? "Perintah mysqldump tidak ditemukan di komputer ini"
+        ? `Perintah ${dumpCommand} tidak ditemukan. Atur MYSQLDUMP_BIN ke lokasi executable dump yang tersedia.`
         : "mysqldump gagal dijalankan"
     );
   } finally {

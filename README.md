@@ -43,7 +43,7 @@ Setiap kali `.env.local` diubah, jalankan ulang `npm run dev`.
 
 1. Di PC backup: `cd backup-receiver`, siapkan `.env` berisi `BACKUP_TOKEN`, `BACKUP_RECEIVER_PORT`, dan `BACKUP_STORAGE_PATH`, lalu `node server.js` (butuh `npm install` di root agar `dotenv` terpasang).
 2. Di laptop user: isi `BACKUP_RECEIVER_URL` (misalnya `http://IP-PC:4000/upload`) dan `BACKUP_TOKEN` yang sama di `.env.local`.
-3. Perintah `mysqldump` harus tersedia di laptop (cek dengan `which mysqldump`).
+3. Perintah dump database harus tersedia di komputer yang menjalankan Next.js. Aplikasi memakai `mariadb-dump` di Linux dan `mysqldump` di Windows; jika nama atau lokasinya berbeda, atur `MYSQLDUMP_BIN` ke executable yang tersedia.
 4. Tekan "Minta backup" di aplikasi. Status berhasil atau gagal tampil di sidebar.
 
 Pemulihan (restore) dilakukan manual dari file backup: `mysql -h HOST -u USER -p chat < backup_xxx.sql`.
