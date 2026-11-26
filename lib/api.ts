@@ -166,10 +166,15 @@ export async function sendMessage(
   return mapMessage(result.data);
 }
 
-// Endpoint backup belum tersedia. Jangan menampilkan backup palsu.
+// Implement backup request to the server.
 export async function requestBackup(): Promise<{
   status: "ok" | "error";
   finishedAt?: string;
 }> {
-  throw new Error("Fitur backup belum tersedia di backend.");
+  // Call the backup API endpoint. It performs the dump and returns status.
+  const result = await apiFetch<{ status: "ok" | "error"; finishedAt?: string }>(
+    "/api/backup",
+    { method: "POST" }
+  );
+  return result;
 }
